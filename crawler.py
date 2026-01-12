@@ -3,7 +3,6 @@ from urllib.parse import urlparse
 import json
 import time
 import asyncio
-
 from extractor import extract_text_and_links
 from utils import normalize_url, is_internal
 from config import START_URL, MAX_PAGES, DELAY, OUTPUT_FILE, MAX_DEPTH, BASE_DOMAIN

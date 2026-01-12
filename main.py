@@ -21,7 +21,7 @@ def run_crawler():
         
     except ImportError:
         print("crawler module not found.")
-    except Exception as e:
+    except Exception as e:  
         print(f"Crawling failed: {e}")
 
 def chat_loop(model_name):
