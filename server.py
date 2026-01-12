@@ -7,6 +7,10 @@ import asyncio
 import os
 import uvicorn
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Import our existing modules
 from chat import ChatEngine
@@ -26,10 +30,26 @@ async def lifespan(app: FastAPI):
     # Startup
     global chat_engine, vector_store, embedding_model
     print("Initializing models...")
+    
+    # Get configuration from environment variables
+    llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    ollama_api_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+    ollama_model = os.getenv("OLLAMA_MODEL", "llama3:8b-instruct-q4_K_M")
+    vllm_api_url = os.getenv("VLLM_API_URL", "http://localhost:8000/v1/chat/completions")
+    vllm_model = os.getenv("VLLM_MODEL", "meta-llama/Meta-Llama-3-8B-Instruct")
+    
     embedding_model = EmbeddingModel()
     vector_store = VectorStore()
-    chat_engine = ChatEngine(vector_store, embedding_model)
-    print("Models initialized.")
+    chat_engine = ChatEngine(
+        vector_store, 
+        embedding_model,
+        llm_provider=llm_provider,
+        ollama_api_url=ollama_api_url,
+        ollama_model=ollama_model,
+        vllm_api_url=vllm_api_url,
+        vllm_model=vllm_model
+    )
+    print(f"Models initialized with provider: {llm_provider}")
     yield
     # Shutdown (if needed)
 

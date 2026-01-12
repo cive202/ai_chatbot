@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  ollama:
+    build:
+      context: ./docker/ollama
+      dockerfile: Dockerfile
+    container_name: ollama
+    image: ollama/ollama:latest
+    # GPU Configuration - supports both Docker Compose v2 and legacy formats
+    # For Docker Compose v2 (recommended):
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Fallback for older Docker Compose versions (uncomment if needed):
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Chatbot service (uncomment if you want to run the chatbot in Docker)
+  # chatbot:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: chatbot
+  #   depends_on:
+  #     ollama:
+  #       condition: service_healthy
+  #   environment:
+  #     - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+  #     - OLLAMA_API_URL=http://ollama:11434
+  #     - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b-instruct-q4_K_M}
+  #     - VLLM_API_URL=${VLLM_API_URL:-http://localhost:8000}
+  #     - LOG_LEVEL=${LOG_LEVEL:-INFO}
+  #   volumes:
+  #     - ./chroma_db:/app/chroma_db
+  #     - ./chunks.json:/app/chunks.json
+  #   ports:
+  #     - "8000:8000"
+  #   restart: unless-stopped
+
+networks:
+  default:
+    name: ai_chatbot_network

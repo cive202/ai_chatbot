@@ -3,10 +3,14 @@ import sys
 import os
 import asyncio
 import json
+from dotenv import load_dotenv
 from config import START_URL, OUTPUT_FILE
 from chat import ChatEngine
 from vector_store import VectorStore
 from embeddings import EmbeddingModel
+
+# Load environment variables
+load_dotenv()
 
 def run_crawler():
     try:
@@ -24,12 +28,32 @@ def run_crawler():
     except Exception as e:  
         print(f"Crawling failed: {e}")
 
-def chat_loop(model_name):
-    print(f"Initializing Chat Engine with model: {model_name}...")
+def chat_loop(model_name=None):
+    # Get LLM provider from environment or default to ollama
+    llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    
+    # If model_name is provided, use it (for backward compatibility)
+    # Otherwise, use environment variables
+    if model_name:
+        print(f"Initializing Chat Engine with model: {model_name}...")
+        # For Ollama, validate the model name
+        if llm_provider == "ollama" and model_name:
+            ollama_model = model_name
+        else:
+            ollama_model = None
+    else:
+        ollama_model = os.getenv("OLLAMA_MODEL")
+        print(f"Initializing Chat Engine with provider: {llm_provider}...")
+    
     try:
         embedding_model = EmbeddingModel()
         vector_store = VectorStore()
-        chat_engine = ChatEngine(vector_store, embedding_model, llm_model=model_name)
+        chat_engine = ChatEngine(
+            vector_store, 
+            embedding_model, 
+            llm_provider=llm_provider,
+            ollama_model=ollama_model
+        )
     except Exception as e:
         print(f"Initialization failed: {e}")
         return
@@ -56,7 +80,7 @@ def main():
 
     # Chat command
     chat_parser = subparsers.add_parser("chat", help="Start the chat interface")
-    chat_parser.add_argument("--model", default="llama3:latest", help="Ollama LLM model to use (default: llama3:latest)")
+    chat_parser.add_argument("--model", default=None, help="Ollama LLM model to use (default: from OLLAMA_MODEL env var). WARNING: Use quantized models like llama3:8b-instruct-q4_K_M for RTX 3060")
 
     # Ingest command
     ingest_parser = subparsers.add_parser("ingest", help="Ingest chunks from chunks.json")
