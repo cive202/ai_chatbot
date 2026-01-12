@@ -1,98 +1,160 @@
-#!/bin/bash
-# Bash script to start Ollama container with GPU verification
-# Includes model pulling with validation
+#!/usr/bin/env bash
+# start_ollama.sh
+# Start the Ollama Docker container, check GPU VRAM, pull a safe default model,
+# and verify container health.
 
-MODEL="${1:-llama3:8b-instruct-q4_K_M}"
-SKIP_GPU_CHECK="${SKIP_GPU_CHECK:-false}"
-SKIP_MODEL_PULL="${SKIP_MODEL_PULL:-false}"
-CONTAINER_NAME="ollama"
+set -euo pipefail
+
+# Default quantized model (safe for RTX 3060)
+DEFAULT_MODEL="${OLLAMA_MODEL:-llama3:8b-instruct-q4_K_M}"
+MODEL="${1:-$DEFAULT_MODEL}"
+
+CONTAINER_NAME="${OLLAMA_CONTAINER_NAME:-ollama}"
 
 # Detect docker compose command
-if command -v docker-compose &> /dev/null; then
-    COMPOSE_CMD="docker-compose"
+if command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
 else
-    COMPOSE_CMD="docker compose"
+  COMPOSE_CMD="docker compose"
 fi
 
-echo "========================================"
-echo "Ollama Docker Setup Script"
-echo "========================================"
-echo ""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# GPU Verification
-if [ "$SKIP_GPU_CHECK" != "true" ]; then
-    echo "Step 1: Verifying GPU access..."
-    if docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null; then
-        echo "GPU access verified!"
-        docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+echo "========================================"
+echo "Ollama Docker Startup (Linux)"
+echo "========================================"
+echo
+echo "[INFO] Compose command   : ${COMPOSE_CMD}"
+echo "[INFO] Container name    : ${CONTAINER_NAME}"
+echo "[INFO] Default model     : ${MODEL}"
+echo
+
+# 1. GPU + VRAM check (host)
+echo "[*] Checking GPU VRAM via nvidia-smi..."
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if nvidia_smi_out="$(nvidia-smi 2>&1)"; then
+    echo "[OK] nvidia-smi is available."
+    echo
+    echo "=== nvidia-smi (first 10 lines) ==="
+    echo "$nvidia_smi_out" | head -n 10
+    echo "==================================="
+    echo
+
+    VRAM_TOTAL_MB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d ' ')"
+    if [[ -n "${VRAM_TOTAL_MB}" && "${VRAM_TOTAL_MB}" =~ ^[0-9]+$ ]]; then
+      if (( VRAM_TOTAL_MB < 12000 )); then
+        echo "[WARN] VRAM < 12GB (${VRAM_TOTAL_MB} MB)."
+        echo "       Unquantized models like 'llama3:latest' will almost certainly cause OOM."
+        echo "       This startup script will only allow quantized models (q4/q5/q6/q8)."
+      else
+        echo "[OK] VRAM is >= 12GB (${VRAM_TOTAL_MB} MB)."
+        echo "     Using quantized models is still recommended for stability."
+      fi
     else
-        echo "WARNING: GPU access test failed!"
-        echo "Make sure NVIDIA Container Toolkit is installed"
-        read -p "Continue anyway? (y/N): " response
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
+      echo "[WARN] Could not parse VRAM from nvidia-smi."
     fi
-    echo ""
-fi
-
-# Start container
-echo "Step 2: Starting Ollama container..."
-if $COMPOSE_CMD up -d ollama; then
-    echo "Container started successfully!"
+  else
+    echo "[WARN] nvidia-smi failed to run; GPU driver might not be configured correctly."
+  fi
 else
-    echo "ERROR: Failed to start container" >&2
-    exit 1
+  echo "[WARN] nvidia-smi not found; skipping detailed VRAM checks."
 fi
 
-# Wait for container to be healthy
-echo ""
-echo "Step 3: Waiting for container to be healthy..."
-MAX_WAIT=120
-WAITED=0
-INTERVAL=5
+echo
+# 2. Start Ollama via Docker Compose
+echo "[*] Starting Ollama service using Docker Compose..."
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[ERROR] Docker is not installed or not in PATH."
+  exit 1
+fi
 
-while [ $WAITED -lt $MAX_WAIT ]; do
-    HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null)
-    if [ "$HEALTH" == "healthy" ]; then
-        echo "Container is healthy!"
-        break
-    fi
-    echo "Waiting... ($WAITED/$MAX_WAIT seconds)"
-    sleep $INTERVAL
+if $COMPOSE_CMD up -d ollama; then
+  echo "[OK] '${COMPOSE_CMD} up -d ollama' succeeded."
+else
+  echo "[ERROR] Failed to start Ollama service with '${COMPOSE_CMD} up -d ollama'."
+  exit 1
+fi
+
+# 3. Wait for health check
+echo
+echo "[*] Waiting for Ollama container '${CONTAINER_NAME}' to become healthy..."
+MAX_WAIT=120
+INTERVAL=5
+WAITED=0
+
+while (( WAITED < MAX_WAIT )); do
+  if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
+    echo "[INFO] Container '${CONTAINER_NAME}' not visible yet... waiting."
+    sleep "$INTERVAL"
     WAITED=$((WAITED + INTERVAL))
+    continue
+  fi
+
+  HEALTH="$(docker inspect --format='{{.State.Health.Status}}' "${CONTAINER_NAME}" 2>/dev/null || echo "unknown")"
+
+  if [[ "$HEALTH" == "healthy" ]]; then
+    echo "[OK] Container '${CONTAINER_NAME}' is healthy."
+    break
+  elif [[ "$HEALTH" == "unhealthy" ]]; then
+    echo "[ERROR] Container '${CONTAINER_NAME}' is UNHEALTHY."
+    echo "  - Check logs: docker logs ${CONTAINER_NAME}"
+    exit 1
+  else
+    echo "[INFO] Health status: ${HEALTH} (waited ${WAITED}/${MAX_WAIT}s)"
+    sleep "$INTERVAL"
+    WAITED=$((WAITED + INTERVAL))
+  fi
 done
 
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo "WARNING: Container did not become healthy within $MAX_WAIT seconds"
-    echo "Check logs with: docker logs $CONTAINER_NAME"
+if (( WAITED >= MAX_WAIT )); then
+  echo "[WARN] Container did not report 'healthy' within ${MAX_WAIT}s."
+  echo "       It may still be starting. Check logs: docker logs ${CONTAINER_NAME}"
 fi
 
-# Model pulling
-if [ "$SKIP_MODEL_PULL" != "true" ]; then
-    echo ""
-    echo "Step 4: Pulling model..."
-    echo "CRITICAL: RTX 3060 requires quantized models (Q4 or Q5)"
-    echo "DO NOT use 'llama3:latest' - it will cause OOM errors!"
-    echo ""
-    echo "Default model: $MODEL"
-    read -p "Enter model name (or press Enter to use default): " custom_model
-    
-    if [ -n "$custom_model" ]; then
-        MODEL="$custom_model"
-    fi
-    
-    # Run the pull script with validation
-    bash "$(dirname "$0")/pull_ollama_model.sh" "$MODEL" "$CONTAINER_NAME"
+# 4. Ensure at least one quantized model exists; otherwise pull default
+echo
+echo "[*] Checking installed Ollama models in container '${CONTAINER_NAME}'..."
+if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
+  echo "[ERROR] Container '${CONTAINER_NAME}' is not running after compose up."
+  exit 1
 fi
 
-echo ""
+if docker exec "${CONTAINER_NAME}" ollama list >/tmp/ollama_models_list 2>&1; then
+  echo "[OK] Retrieved model list from Ollama."
+  echo
+  echo "=== Current models ==="
+  cat /tmp/ollama_models_list
+  echo "======================"
+  echo
+
+  if grep -Eq 'q4|q5|q6|q8' /tmp/ollama_models_list; then
+    echo "[OK] At least one quantized model is installed."
+  else
+    echo "[WARN] No quantized models detected. Pulling default model '${MODEL}'."
+    echo
+    bash "${SCRIPT_DIR}/pull_ollama_model.sh" "${MODEL}"
+  fi
+else
+  echo "[WARN] Could not list models from Ollama (likely first run)."
+  echo "       Pulling default model '${MODEL}'."
+  echo
+  bash "${SCRIPT_DIR}/pull_ollama_model.sh" "${MODEL}"
+fi
+
+# 5. HTTP health check
+echo
+echo "[*] Performing HTTP health check: http://localhost:11434/api/tags"
+if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+  echo "[OK] Ollama HTTP endpoint is responding."
+else
+  echo "[WARN] Could not reach Ollama at http://localhost:11434/api/tags."
+  echo "       Check logs: docker logs ${CONTAINER_NAME}"
+fi
+
+echo
 echo "========================================"
-echo "Setup Complete!"
+echo "Ollama startup complete."
+echo "Container : ${CONTAINER_NAME}"
+echo "Endpoint  : http://localhost:11434"
+echo "Model     : ${MODEL}"
 echo "========================================"
-echo ""
-echo "Ollama is running at: http://localhost:11434"
-echo "Test with: curl http://localhost:11434/api/tags"
-echo ""
-echo "To view logs: docker logs -f $CONTAINER_NAME"
-echo "To stop: $COMPOSE_CMD stop ollama"
